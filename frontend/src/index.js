@@ -1,11 +1,17 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import axios from 'axios';
 import './index.css';
 import App from './App';
 
+const API_BASE_URL = process.env.REACT_APP_API_URL || '';
+if (API_BASE_URL) {
+  axios.defaults.baseURL = API_BASE_URL;
+}
+
 // Global error handlers to send browser errors to backend logs
 window.onerror = function (message, source, lineno, colno, error) {
-  fetch('/api/log-error', {
+  fetch(`${API_BASE_URL}/api/log-error`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -20,7 +26,7 @@ window.onerror = function (message, source, lineno, colno, error) {
 };
 
 window.addEventListener('unhandledrejection', function (event) {
-  fetch('/api/log-error', {
+  fetch(`${API_BASE_URL}/api/log-error`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
