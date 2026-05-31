@@ -1,0 +1,4 @@
+name,enrollment_no,admission_no,course,year,semester
+John Doe,2024001,ADM001,BTech,1st,1st
+Jane Smith,2024002,ADM002,BTech,1st,1st
+Mike Johnson,,ADM003,BCA,2nd,3rd

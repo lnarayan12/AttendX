@@ -1,22 +1,59 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
 import './Reports.css';
 
+
+
 export default function Reports() {
+
+  const toDbDate = (str) => {
+    if (!str) return '';
+    const trimmed = str.trim();
+    const parts = trimmed.split(/[-/]/).map(p => p.trim());
+    if (parts.length === 3) {
+      let [d, m, y] = parts;
+      if (d.length === 4) {
+        return `${d}-${m.padStart(2, '0')}-${y.padStart(2, '0')}`;
+      }
+      d = d.padStart(2, '0');
+      m = m.padStart(2, '0');
+      if (y.length === 2) {
+        y = '20' + y;
+      }
+      return `${y}-${m}-${d}`;
+    }
+    return trimmed;
+  };
+
+  const fromDbDate = (str) => {
+    if (!str) return '';
+    const trimmed = str.trim();
+    const parts = trimmed.split(/[-/]/).map(p => p.trim());
+    if (parts.length === 3) {
+      const [y, m, d] = parts;
+      if (y.length === 2 || d.length === 4) return trimmed; // already DD-MM-YYYY
+      return `${d.padStart(2, '0')}-${m.padStart(2, '0')}-${y}`;
+    }
+    return trimmed;
+  };
+
   const [report, setReport] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [filterDate, setFilterDate] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [filterEvent, setFilterEvent] = useState('');
   const [expandedSession, setExpandedSession] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('all');
 
   const fetchReport = useCallback(async () => {
     setLoading(true);
     try {
       const params = {};
-      if (filterDate) params.date = filterDate;
+      if (startDate) params.startDate = startDate;
+      if (endDate) params.endDate = endDate;
       if (filterEvent) params.event = filterEvent;
       const res = await axios.get('/api/attendance/report', { params });
       setReport(res.data);
@@ -25,7 +62,7 @@ export default function Reports() {
     } finally {
       setLoading(false);
     }
-  }, [filterDate, filterEvent]);
+  }, [startDate, endDate, filterEvent]);
 
   useEffect(() => {
     const t = setTimeout(fetchReport, 400);
@@ -52,53 +89,53 @@ export default function Reports() {
       const formattedDate = formatDateDDMMYYYY(session.date);
       const sheetName = `${session.event_name}_${formattedDate}`.replace(/[\/\\?*:\[\]]/g, '-').substring(0, 31);
       
-      const rows = [];
-      rows.push({ Name: 'ATTENDANCE REPORT', Event: session.event_name, Date: session.date });
-      rows.push({});
-      
-      // Header row
-      rows.push({
-        'S.No': 'S.No',
-        Name: 'Name',
-        'Enrollment No.': 'Enrollment No.',
-        'Admission No.': 'Admission No.',
-        Course: 'Course',
-        Year: 'Year',
-        Semester: 'Semester',
-        Status: 'Status'
-      });
+      const rows = [
+        ['ATTENDANCE REPORT', '', '', '', '', '', '', ''],
+        ['Event:', session.event_name, 'Date:', session.date, '', '', '', ''],
+        [],
+        ['S.No', 'Name', 'Enrollment No.', 'Admission No.', 'Course', 'Year', 'Semester', 'Status']
+      ];
 
       // Data rows
-      (session.records || []).forEach((r, idx) => {
-        rows.push({
-          'S.No': idx + 1,
-          Name: r.name,
-          'Enrollment No.': r.enrollment_no,
-          'Admission No.': r.admission_no,
-          Course: r.course,
-          Year: r.year,
-          Semester: r.semester,
-          Status: r.present == 1 ? 'Present' : 'Absent'
+      (session.records || [])
+        .filter(r => {
+          if (statusFilter === 'present') return r.present === 1;
+          if (statusFilter === 'absent') return r.present !== 1;
+          return true;
+        })
+        .forEach((r, idx) => {
+          rows.push([
+            idx + 1,
+            r.name || '',
+            r.enrollment_no || '',
+            r.admission_no || '',
+            r.course || '',
+            r.year || '',
+            r.semester || '',
+            r.present == 1 ? 'Present' : 'Absent'
+          ]);
         });
-      });
 
-      rows.push({});
-      rows.push({
-        'S.No': 'Summary',
-        Name: `Total Members: ${session.total}`,
-        'Enrollment No.': `Present: ${session.present}`,
-        'Admission No.': `Absent: ${session.absent}`,
-        Course: `Percentage: ${session.total ? Math.round((session.present / session.total) * 100) : 0}%`
-      });
+      rows.push([]);
+      rows.push([
+        'Summary',
+        `Total Members: ${session.total}`,
+        `Present: ${session.present}`,
+        `Absent: ${session.absent}`,
+        `Percentage: ${session.total ? Math.round((session.present / session.total) * 100) : 0}%`,
+        '',
+        '',
+        ''
+      ]);
 
-      const ws = XLSX.utils.json_to_sheet(rows);
+      const ws = XLSX.utils.aoa_to_sheet(rows);
       
       // Set column widths
       ws['!cols'] = [
-        { wch: 6 },   // S.No
-        { wch: 20 },  // Name
-        { wch: 16 },  // Enrollment No.
-        { wch: 16 },  // Admission No.
+        { wch: 8 },   // S.No
+        { wch: 24 },  // Name
+        { wch: 18 },  // Enrollment No.
+        { wch: 18 },  // Admission No.
         { wch: 12 },  // Course
         { wch: 10 },  // Year
         { wch: 12 },  // Semester
@@ -118,13 +155,19 @@ export default function Reports() {
 
     const rows = [['Date', 'Event', 'Name', 'Enrollment No.', 'Course', 'Year', 'Semester', 'Status']];
     report.forEach(session => {
-      (session.records || []).forEach(r => {
-        rows.push([
-          session.date, session.event_name,
-          r.name, r.enrollment_no, r.course, r.year, r.semester,
-          r.present == 1 ? 'Present' : 'Absent'
-        ]);
-      });
+      (session.records || [])
+        .filter(r => {
+          if (statusFilter === 'present') return r.present === 1;
+          if (statusFilter === 'absent') return r.present !== 1;
+          return true;
+        })
+        .forEach(r => {
+          rows.push([
+            session.date, session.event_name,
+            r.name, r.enrollment_no, r.course, r.year, r.semester,
+            r.present == 1 ? 'Present' : 'Absent'
+          ]);
+        });
     });
 
     const csv = rows.map(r => r.map(v => `"${(v||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -161,14 +204,64 @@ export default function Reports() {
         </h3>
         <div className="filter-row">
           <div className="field">
-            <label>Filter by Date</label>
-            <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
+            <label>From Date (DD-MM-YYYY)</label>
+            <div className="date-input-container" style={{ minWidth: '220px' }}>
+              <input type="text" placeholder="e.g. 01-05-2026" value={startDate} onChange={e => setStartDate(e.target.value)} />
+              <div className="picker-icon-wrap">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                <input 
+                  type="date" 
+                  value={toDbDate(startDate)}
+                  onChange={e => {
+                    if (e.target.value) {
+                      setStartDate(fromDbDate(e.target.value));
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="field">
+            <label>To Date (DD-MM-YYYY)</label>
+            <div className="date-input-container" style={{ minWidth: '220px' }}>
+              <input type="text" placeholder="e.g. 31-05-2026" value={endDate} onChange={e => setEndDate(e.target.value)} />
+              <div className="picker-icon-wrap">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                <input 
+                  type="date" 
+                  value={toDbDate(endDate)}
+                  onChange={e => {
+                    if (e.target.value) {
+                      setEndDate(fromDbDate(e.target.value));
+                    }
+                  }}
+                />
+              </div>
+            </div>
           </div>
           <div className="field">
             <label>Filter by Event</label>
             <input type="text" placeholder="Event name..." value={filterEvent} onChange={e => setFilterEvent(e.target.value)} />
           </div>
-          <button className="clear-filter-btn" onClick={() => { setFilterDate(''); setFilterEvent(''); }}>
+          <div className="field">
+            <label>Status</label>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+              <option value="all">Both</option>
+              <option value="present">Present</option>
+              <option value="absent">Absent</option>
+            </select>
+          </div>
+          <button className="clear-filter-btn" onClick={() => { setStartDate(''); setEndDate(''); setFilterEvent(''); setStatusFilter('all'); }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -242,7 +335,10 @@ export default function Reports() {
               <div key={session.id} className="session-block">
                 <div
                   className="session-header"
-                  onClick={() => setExpandedSession(expandedSession === session.id ? null : session.id)}
+                  onClick={() => {
+                    setExpandedSession(expandedSession === session.id ? null : session.id);
+                    setStatusFilter('all');
+                  }}
                 >
                   <div className="session-main">
                     <div className="session-date">
@@ -277,6 +373,7 @@ export default function Reports() {
 
                 {expandedSession === session.id && session.records && (
                   <div className="session-records animate-in">
+
                     <table className="records-table">
                       <thead>
                         <tr>
@@ -290,24 +387,30 @@ export default function Reports() {
                         </tr>
                       </thead>
                       <tbody>
-                        {session.records.map((r, idx) => (
-                          <tr key={idx}>
-                            <td className="row-num">{idx + 1}</td>
-                            <td className="name-cell">
-                              <div className="mini-avatar">{r.name[0]}</div>
-                              {r.name}
-                            </td>
-                            <td className="mono">{r.enrollment_no}</td>
-                            <td>{r.course}</td>
-                            <td>{r.year}</td>
-                            <td>{r.semester}</td>
-                            <td>
-                              <span className={`status-badge ${r.present == 1 ? 'present-badge' : 'absent-badge'}`}>
-                                {r.present == 1 ? '✓ Present' : '✗ Absent'}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
+                        {session.records
+                          .filter(r => {
+                            if (statusFilter === 'present') return r.present === 1;
+                            if (statusFilter === 'absent') return r.present !== 1;
+                            return true;
+                          })
+                          .map((r, idx) => (
+                            <tr key={idx}>
+                              <td className="row-num">{idx + 1}</td>
+                              <td className="name-cell">
+                                <div className="mini-avatar">{r.name[0]}</div>
+                                {r.name}
+                              </td>
+                              <td className="mono">{r.enrollment_no}</td>
+                              <td>{r.course}</td>
+                              <td>{r.year}</td>
+                              <td>{r.semester}</td>
+                              <td>
+                                <span className={`status-badge ${r.present == 1 ? 'present-badge' : 'absent-badge'}`}>
+                                  {r.present == 1 ? '✓ Present' : '✗ Absent'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
                       </tbody>
                     </table>
                   </div>

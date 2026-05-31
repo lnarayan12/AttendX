@@ -16,6 +16,18 @@ const NAV_ITEMS = [
     )
   },
   {
+    key: 'events',
+    label: 'Events',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+        <line x1="16" y1="2" x2="16" y2="6"/>
+        <line x1="8" y1="2" x2="8" y2="6"/>
+        <line x1="3" y1="10" x2="21" y2="10"/>
+      </svg>
+    )
+  },
+  {
     key: 'attendance',
     label: 'Attendance',
     icon: (
@@ -42,7 +54,7 @@ const NAV_ITEMS = [
   }
 ];
 
-export default function Layout({ activeTab, onTabChange }) {
+export default function Layout({ activeTab, onTabChange, children }) {
   const { user, logout } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -124,7 +136,7 @@ export default function Layout({ activeTab, onTabChange }) {
           </div>
         </header>
         <main className="page-content">
-          {/* Children injected from App */}
+          {children}
         </main>
       </div>
     </div>

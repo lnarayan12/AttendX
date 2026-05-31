@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
@@ -7,6 +7,8 @@ import './Master.css';
 const EMPTY_FORM = { name: '', course: '', year: '', enrollment_no: '', semester: '', admission_no: '' };
 const YEARS = ['1st', '2nd', '3rd', '4th'];
 const SEMESTERS = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
+
+
 
 export default function Master() {
   const [members, setMembers] = useState([]);
@@ -23,7 +25,9 @@ export default function Master() {
 
   const fetchMembers = useCallback(async () => {
     try {
-      const res = await axios.get(`/api/members?search=${search}`);
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await axios.get(`/api/members?search=${search}`, { headers });
       setMembers(res.data);
     } catch (err) {
       toast.error('Failed to fetch members');
@@ -39,13 +43,17 @@ export default function Master() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!form.year) { toast.error('Year is required'); return; }
+    if (!form.semester) { toast.error('Semester is required'); return; }
     setLoading(true);
+    const token = localStorage.getItem('token');
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
     try {
       if (editId) {
-        await axios.put(`/api/members/${editId}`, form);
+        await axios.put(`/api/members/${editId}`, form, { headers });
         toast.success('Member updated');
       } else {
-        await axios.post('/api/members', form);
+        await axios.post('/api/members', form, { headers });
         toast.success('Member added');
       }
       setForm(EMPTY_FORM);
@@ -71,7 +79,9 @@ export default function Master() {
 
   const handleDelete = async (id) => {
     try {
-      await axios.delete(`/api/members/${id}`);
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      await axios.delete(`/api/members/${id}`, { headers });
       toast.success('Member deleted');
       fetchMembers();
     } catch {
@@ -91,8 +101,10 @@ export default function Master() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const loadToast = toast.loading('Parsing and validating Excel file...');
+
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const data = event.target?.result;
         const workbook = XLSX.read(data, { type: 'array' });
@@ -100,36 +112,108 @@ export default function Master() {
         const rows = XLSX.utils.sheet_to_json(sheet);
         
         if (rows.length === 0) {
+          toast.dismiss(loadToast);
           toast.error('Excel file is empty');
           return;
         }
 
-        // Validate only required column: name
-        const requiredColumns = ['name'];
+        // Validate required columns: name, enrollment_no, admission_no
+        const requiredColumns = ['name', 'enrollment_no', 'admission_no'];
         const allColumns = ['name', 'course', 'year', 'enrollment_no', 'semester', 'admission_no'];
         const hasRequiredColumns = requiredColumns.every(col => 
           Object.keys(rows[0]).some(k => k.toLowerCase().trim() === col.toLowerCase())
         );
 
         if (!hasRequiredColumns) {
-          toast.error(`Excel must have required column: name`);
+          toast.dismiss(loadToast);
+          toast.error(`Excel must have required columns: name, enrollment_no, admission_no`);
           return;
         }
 
-        // Normalize column names (handle different cases)
-        const normalizedRows = rows.map(row => {
-          const normalizedRow = {};
+        // Fetch all existing members from database to check duplicates
+        const token = localStorage.getItem('token');
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const res = await axios.get('/api/members', { headers });
+        const dbMembers = res.data;
+
+        const dbEnrollments = new Set(dbMembers.map(m => m.enrollment_no?.toLowerCase().trim()).filter(Boolean));
+        const dbAdmissions = new Set(dbMembers.map(m => m.admission_no?.toLowerCase().trim()).filter(Boolean));
+
+        const seenEnrollments = new Set();
+        const seenAdmissions = new Set();
+        const fileDuplicateEnrollments = new Set();
+        const fileDuplicateAdmissions = new Set();
+
+        // First pass: identify duplicates inside the excel file
+        rows.forEach(row => {
           allColumns.forEach(col => {
             const matchingKey = Object.keys(row).find(k => k.toLowerCase().trim() === col.toLowerCase());
-            normalizedRow[col] = matchingKey ? row[matchingKey] : '';
+            let val = matchingKey ? row[matchingKey] : '';
+            if (val !== undefined && val !== null) {
+              let str = val.toString().trim();
+              if (/^\d+\.0+$/.test(str)) {
+                str = str.split('.')[0];
+              }
+              row[col] = str;
+            } else {
+              row[col] = '';
+            }
           });
-          return normalizedRow;
+
+          const enroll = row.enrollment_no?.toLowerCase();
+          const adm = row.admission_no?.toLowerCase();
+
+          if (enroll) {
+            if (seenEnrollments.has(enroll)) fileDuplicateEnrollments.add(enroll);
+            seenEnrollments.add(enroll);
+          }
+          if (adm) {
+            if (seenAdmissions.has(adm)) fileDuplicateAdmissions.add(adm);
+            seenAdmissions.add(adm);
+          }
         });
 
-        setImportData(normalizedRows);
+        // Normalize and validate rows
+        const validatedRows = rows.map(row => {
+          const name = row.name?.trim();
+          const enroll = row.enrollment_no?.trim();
+          const adm = row.admission_no?.trim();
+
+          let status = 'All good';
+          let isValid = true;
+
+          if (!name || !enroll || !adm) {
+            status = 'Wrong format (Missing required fields)';
+            isValid = false;
+          } else if (fileDuplicateEnrollments.has(enroll.toLowerCase()) || fileDuplicateAdmissions.has(adm.toLowerCase())) {
+            status = 'Duplicate in Excel file';
+            isValid = false;
+          } else if (dbEnrollments.has(enroll.toLowerCase()) || dbAdmissions.has(adm.toLowerCase())) {
+            status = 'Already exists in database';
+            isValid = false;
+          }
+
+          return {
+            name: name || '',
+            course: row.course?.trim() || '',
+            year: row.year?.trim() || '',
+            enrollment_no: enroll || '',
+            semester: row.semester?.trim() || '',
+            admission_no: adm || '',
+            status,
+            isValid,
+            import: isValid
+          };
+        });
+
+        setImportData(validatedRows);
         setShowImport(true);
-        toast.success(`${rows.length} rows ready to import`);
+        toast.dismiss(loadToast);
+        
+        const validCount = validatedRows.filter(r => r.isValid).length;
+        toast.success(`Validated ${validatedRows.length} rows. ${validCount} rows acceptable.`);
       } catch (err) {
+        toast.dismiss(loadToast);
         toast.error('Failed to parse Excel file');
         console.error(err);
       }
@@ -137,12 +221,37 @@ export default function Master() {
     reader.readAsArrayBuffer(file);
   };
 
+  const handleToggleImportRow = (index) => {
+    setImportData(prev => prev.map((row, i) => {
+      if (i === index && row.isValid) {
+        return { ...row, import: !row.import };
+      }
+      return row;
+    }));
+  };
+
+  const handleSelectAllImport = (checked) => {
+    setImportData(prev => prev.map(row => {
+      if (row.isValid) {
+        return { ...row, import: checked };
+      }
+      return row;
+    }));
+  };
+
   const handleImport = async () => {
     if (!importData) return;
+    const toImport = importData.filter(r => r.import);
+    if (toImport.length === 0) {
+      toast.error('No members selected for import');
+      return;
+    }
     
     setImporting(true);
     try {
-      const res = await axios.post('/api/members/import/bulk', { members: importData });
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await axios.post('/api/members/import/bulk', { members: toImport }, { headers });
       
       if (res.data.success > 0) {
         toast.success(`${res.data.success} members imported successfully`);
@@ -201,16 +310,17 @@ export default function Master() {
 
       {/* Add / Edit Form */}
       {showForm && (
-        <div className="form-card animate-in">
-          <div className="form-header">
-            <h3>{editId ? 'Edit Member' : 'Add New Member'}</h3>
-            <button className="close-btn" onClick={cancelForm}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-          <form onSubmit={handleSubmit} className="member-form">
+        <div className="modal-backdrop" onClick={cancelForm}>
+          <div className="modal member-modal" onClick={e => e.stopPropagation()}>
+            <div className="form-header">
+              <h3>{editId ? 'Edit Member' : 'Add New Member'}</h3>
+              <button className="close-btn" onClick={cancelForm}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <form onSubmit={handleSubmit} className="member-form">
             <div className="form-grid">
               <div className="field">
                 <label>Full Name *</label>
@@ -226,14 +336,14 @@ export default function Master() {
                 <label>Year *</label>
                 <select value={form.year} onChange={e => setForm(f => ({ ...f, year: e.target.value }))} required>
                   <option value="">Select Year</option>
-                  {YEARS.map(y => <option key={y}>{y}</option>)}
+                  {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
               </div>
               <div className="field">
                 <label>Semester *</label>
                 <select value={form.semester} onChange={e => setForm(f => ({ ...f, semester: e.target.value }))} required>
                   <option value="">Select Semester</option>
-                  {SEMESTERS.map(s => <option key={s}>{s}</option>)}
+                  {SEMESTERS.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div className="field">
@@ -247,7 +357,7 @@ export default function Master() {
                   onChange={e => setForm(f => ({ ...f, admission_no: e.target.value.toUpperCase() }))} required />
               </div>
             </div>
-            <div className="form-actions">
+             <div className="form-actions">
               <button type="button" className="btn-ghost" onClick={cancelForm}>Cancel</button>
               <button type="submit" className="btn-primary" disabled={loading}>
                 {loading ? <span className="spinner-sm" /> : null}
@@ -256,6 +366,7 @@ export default function Master() {
             </div>
           </form>
         </div>
+      </div>
       )}
 
       {/* Search + Table */}
@@ -384,23 +495,42 @@ export default function Master() {
             ) : (
               <>
                 <h3>Preview Import Data</h3>
-                <p className="import-info">{importData.length} members ready to import</p>
+                <p className="import-info">
+                  {importData.length} total rows found. {importData.filter(r => r.import).length} selected for import.
+                </p>
                 <div className="import-preview">
                   <table className="preview-table">
                     <thead>
                       <tr>
-                        <th>#</th>
+                        <th style={{ width: '40px', textAlign: 'center' }}>
+                          <input 
+                            type="checkbox" 
+                            checked={importData.some(r => r.isValid) && importData.filter(r => r.isValid).every(r => r.import)}
+                            onChange={e => handleSelectAllImport(e.target.checked)}
+                            disabled={!importData.some(r => r.isValid)}
+                          />
+                        </th>
+                        <th style={{ width: '40px' }}>#</th>
                         <th>Name</th>
                         <th>Course</th>
                         <th>Year</th>
                         <th>Semester</th>
                         <th>Enrollment No.</th>
                         <th>Admission No.</th>
+                        <th>Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {importData.slice(0, 5).map((m, i) => (
-                        <tr key={i}>
+                      {importData.map((m, i) => (
+                        <tr key={i} className={m.isValid ? 'preview-row-valid' : 'preview-row-invalid'}>
+                          <td style={{ textAlign: 'center' }}>
+                            <input 
+                              type="checkbox" 
+                              checked={m.import} 
+                              disabled={!m.isValid} 
+                              onChange={() => handleToggleImportRow(i)} 
+                            />
+                          </td>
                           <td>{i + 1}</td>
                           <td>{m.name}</td>
                           <td>{m.course}</td>
@@ -408,17 +538,21 @@ export default function Master() {
                           <td>{m.semester}</td>
                           <td className="mono">{m.enrollment_no}</td>
                           <td className="mono">{m.admission_no}</td>
+                          <td>
+                            <span className={`status-badge-inline ${m.isValid ? 'success' : 'error'}`}>
+                              {m.status}
+                            </span>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                  {importData.length > 5 && <p style={{fontSize: '12px', color: '#666', marginTop: '8px'}}>... and {importData.length - 5} more</p>}
                 </div>
                 <div className="modal-actions">
                   <button className="btn-ghost" onClick={() => setImportData(null)} disabled={importing}>Back</button>
-                  <button className="btn-primary" onClick={handleImport} disabled={importing}>
+                  <button className="btn-primary" onClick={handleImport} disabled={importing || importData.filter(r => r.import).length === 0}>
                     {importing ? <span className="spinner-sm" /> : null}
-                    Import {importData.length} Members
+                    Import {importData.filter(r => r.import).length} Members
                   </button>
                 </div>
               </>

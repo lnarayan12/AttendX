@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import './Attendance.css';
@@ -12,11 +12,31 @@ export default function Attendance() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectAll, setSelectAll] = useState(false);
+  const [events, setEvents] = useState([]);
+  const [assignedMemberIds, setAssignedMemberIds] = useState(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isExistingSession, setIsExistingSession] = useState(false);
+
+  const suggestionsContainerRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (suggestionsContainerRef.current && !suggestionsContainerRef.current.contains(event.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const fetchMembers = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await axios.get('/api/members');
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await axios.get('/api/members', { headers });
       const mList = res.data;
       setMembers(mList);
       setAttendance(prev => {
@@ -29,12 +49,146 @@ export default function Attendance() {
     }
   }, []);
 
-  useEffect(() => { fetchMembers(); }, [fetchMembers]);
+  const fetchEvents = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await axios.get('/api/events', { headers });
+      setEvents(res.data);
+    } catch (err) {
+      console.error('Failed to fetch events', err);
+    }
+  }, []);
 
-  const filteredMembers = members.filter(m =>
+  useEffect(() => {
+    fetchMembers();
+    fetchEvents();
+  }, [fetchMembers, fetchEvents]);
+
+  const loadEventMembers = async (eventId) => {
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await axios.get(`/api/events/${eventId}`, { headers });
+      // Store event members, but don't filter display members by them
+      // Event members are just a reference, actual attendance can include any members
+      setAssignedMemberIds(null); // Don't filter display
+      console.log('Event members available:', res.data.members.map(m => m.id));
+    } catch (err) {
+      console.error('Failed to load event members:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEventNameChange = (e) => {
+    const val = e.target.value;
+    setEventName(val);
+    setIsExistingSession(false);
+    setSelectAll(false); // Reset select all when changing event
+
+    // Check if there is any event with this name in the database
+    const match = events.find(
+      evt => evt.name.toLowerCase() === val.trim().toLowerCase()
+    );
+
+    if (match) {
+      setDate(match.date);
+      loadEventMembers(match.id);
+    } else {
+      setDate(new Date().toISOString().split('T')[0]); // Reset to today's date for custom session
+      setAssignedMemberIds(null);
+    }
+  };
+
+  const handleSelectSuggestion = (event) => {
+    setEventName(event.name);
+    setDate(event.date);
+    setSelectAll(false); // Reset select all when selecting event from suggestions
+    loadEventMembers(event.id);
+    setShowSuggestions(false);
+    setIsExistingSession(false);
+  };
+
+  // Load existing session details if date + event name match
+  useEffect(() => {
+    if (!date || !eventName.trim() || members.length === 0) {
+      setIsExistingSession(false);
+      setAttendance(prev => {
+        const next = { ...prev };
+        members.forEach(m => { next[m.id] = false; });
+        return next;
+      });
+      return;
+    }
+
+    const loadExisting = setTimeout(async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        // Use exact date and event match
+        const res = await axios.get('/api/attendance/sessions', {
+          params: { date, event: eventName.trim() },
+          headers
+        });
+        
+        if (res.data && res.data.length > 0) {
+          const session = res.data[0];
+          const details = await axios.get(`/api/attendance/sessions/${session.id}`, { headers });
+          
+          if (details.data && Array.isArray(details.data.records) && details.data.records.length > 0) {
+            setAttendance(prev => {
+              const next = { ...prev };
+              // Set all current members to absent first (in case student list changed)
+              members.forEach(m => { next[m.id] = false; });
+              // Populate saved attendance records
+              details.data.records.forEach(r => {
+                if (r && typeof r.present !== 'undefined') {
+                  next[r.id] = r.present === 1;
+                }
+              });
+              return next;
+            });
+            setIsExistingSession(true);
+            toast.success('Loaded existing attendance for this session');
+          } else {
+            // Reset to default (all absent) if no records
+            setIsExistingSession(false);
+            setAttendance(prev => {
+              const next = { ...prev };
+              members.forEach(m => { next[m.id] = false; });
+              return next;
+            });
+          }
+        } else {
+          // Reset to default (all absent) if session does not exist
+          setIsExistingSession(false);
+          setAttendance(prev => {
+            const next = { ...prev };
+            members.forEach(m => { next[m.id] = false; });
+            return next;
+          });
+        }
+      } catch (err) {
+        console.error('Failed to load session details:', err);
+        setIsExistingSession(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(loadExisting);
+  }, [date, eventName, members]);
+
+  const displayMembers = members;
+
+  const filteredMembers = displayMembers.filter(m =>
     m.name.toLowerCase().includes(search.toLowerCase()) ||
     m.enrollment_no.toLowerCase().includes(search.toLowerCase())
   );
+
+  const filteredSuggestions = events
+    .filter(e => e.name.toLowerCase().includes(eventName.toLowerCase()))
+    .sort((a, b) => b.id - a.id);
 
   const toggleMember = (id) => {
     setAttendance(prev => ({ ...prev, [id]: !prev[id] }));
@@ -55,9 +209,12 @@ export default function Attendance() {
 
     setSaving(true);
     try {
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const attendanceList = members.map(m => ({ member_id: m.id, present: attendance[m.id] || false }));
-      await axios.post('/api/attendance/save', { date, event_name: eventName.trim(), attendance: attendanceList });
-      toast.success('Attendance saved successfully!');
+      await axios.post('/api/attendance/save', { date, event_name: eventName.trim(), attendance: attendanceList }, { headers });
+      toast.success(isExistingSession ? 'Attendance updated successfully!' : 'Attendance saved successfully!');
+      setIsExistingSession(true);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to save');
     } finally {
@@ -81,15 +238,29 @@ export default function Attendance() {
           </svg>
           Session Details
         </h3>
-        <div className="config-grid">
-          <div className="field">
-            <label>Date *</label>
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} />
-          </div>
-          <div className="field">
+        <div className="config-grid" style={{ gridTemplateColumns: '1fr' }}>
+          <div className="field" style={{ position: 'relative' }} ref={suggestionsContainerRef}>
             <label>Event Name *</label>
-            <input type="text" placeholder="e.g. Morning Assembly, Tech Fest, Regular Class"
-              value={eventName} onChange={e => setEventName(e.target.value)} />
+            <input
+              type="text"
+              placeholder="Type to search event (e.g. Morning Assembly, Annual Sports Day) or enter custom session name"
+              value={eventName}
+              onChange={handleEventNameChange}
+              onFocus={() => setShowSuggestions(true)}
+              style={{ width: '100%', boxSizing: 'border-box' }}
+            />
+            {showSuggestions && filteredSuggestions.length > 0 && (
+              <ul className="suggestions-list" style={{ width: '100%', boxSizing: 'border-box' }}>
+                {filteredSuggestions.map(e => (
+                  <li key={e.id} onClick={() => handleSelectSuggestion(e)} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px' }}>
+                    <span className="suggestion-name" style={{ fontSize: '15px' }}>{e.name}</span>
+                    <span className="suggestion-date" style={{ fontSize: '12px', padding: '4px 12px' }}>
+                      {new Date(e.date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       </div>
@@ -193,11 +364,19 @@ export default function Attendance() {
       <div className="save-row">
         <button className="save-btn" onClick={handleSave} disabled={saving || members.length === 0}>
           {saving ? <><span className="spinner-sm" /> Saving...</> : (
-            <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-              <polyline points="17 21 17 13 7 13 7 21"/>
-              <polyline points="7 3 7 8 15 8"/>
-            </svg> Save Attendance</>
+            isExistingSession ? (
+              <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                <polyline points="17 21 17 13 7 13 7 21"/>
+                <polyline points="7 3 7 8 15 8"/>
+              </svg> Update Attendance</>
+            ) : (
+              <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                <polyline points="17 21 17 13 7 13 7 21"/>
+                <polyline points="7 3 7 8 15 8"/>
+              </svg> Save Attendance</>
+            )
           )}
         </button>
       </div>

@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import Layout from './components/Layout';
 import Master from './pages/Master';
+import Event from './pages/Event';
 import Attendance from './pages/Attendance';
 import Reports from './pages/Reports';
 import './index.css';
@@ -28,6 +29,7 @@ function AppContent() {
   const renderTab = () => {
     switch (activeTab) {
       case 'master': return <Master />;
+      case 'events': return <Event />;
       case 'attendance': return <Attendance />;
       case 'reports': return <Reports />;
       default: return <Master />;
@@ -35,15 +37,9 @@ function AppContent() {
   };
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
-      <Layout activeTab={activeTab} onTabChange={setActiveTab} />
-      <div style={{ marginLeft: 'var(--sidebar-w)', flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ height: 'var(--header-h)' }} />
-        <main style={{ flex: 1, padding: '24px', background: 'var(--surface-alt)' }}>
-          {renderTab()}
-        </main>
-      </div>
-    </div>
+    <Layout activeTab={activeTab} onTabChange={setActiveTab}>
+      {renderTab()}
+    </Layout>
   );
 }
 
